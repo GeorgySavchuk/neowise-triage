@@ -7,29 +7,91 @@
   <style>
     body { max-width: 40rem; margin: 2rem auto; padding: 0 1rem; font: 1rem/1.5 system-ui, sans-serif; }
     textarea { box-sizing: border-box; display: block; width: 100%; margin: .5rem 0; padding: .5rem; font: inherit; }
-    button { padding: .4rem .8rem; font: inherit; }
-    pre { white-space: pre-wrap; }
+    button { padding: .5rem 1rem; font: inherit; }
+    #status { margin: 1rem 0; }
+    #draft { white-space: pre-wrap; padding: .75rem; border: 1px solid #ccc; border-radius: .4rem; }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
   <h1>Входящие заявки</h1>
   <form>
     <label for="message">Текст заявки</label>
-    <textarea id="message" rows="4"></textarea>
+    <textarea id="message" rows="4" required></textarea>
     <button type="submit">Разобрать заявку</button>
   </form>
-  <pre id="result" aria-live="polite"></pre>
+  <p id="status" role="status" aria-live="polite"></p>
+  <section id="answer" hidden>
+    <p><strong>Тема:</strong> <span id="topic"></span></p>
+    <p><strong>Черновик ответа:</strong></p>
+    <div id="draft"></div>
+    <p>Проверьте черновик перед отправкой клиенту.</p>
+  </section>
+  <section id="manual" hidden>
+    <h2>Нужен ручной разбор</h2>
+    <p>AI не смог подготовить надёжный ответ. Проверьте исходную заявку выше, определите тему и напишите ответ самостоятельно.</p>
+  </section>
   <script type="module">
     const form = document.querySelector("form");
-    const result = document.querySelector("#result");
+    const message = document.querySelector("#message");
+    const status = document.querySelector("#status");
+    const answer = document.querySelector("#answer");
+    const manual = document.querySelector("#manual");
+    const topic = document.querySelector("#topic");
+    const draft = document.querySelector("#draft");
+    const topicNames = { delivery: "Доставка", pricing: "Стоимость", other: "Другое" };
+    let requestId = 0;
+    let activeController;
+
+    function reset() {
+      answer.hidden = true;
+      manual.hidden = true;
+      topic.textContent = "";
+      draft.textContent = "";
+    }
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const reply = await fetch("/api/triage", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: document.querySelector("#message").value }),
-      });
-      result.textContent = JSON.stringify(await reply.json(), null, 2);
+      const id = ++requestId;
+      activeController?.abort();
+      const controller = new AbortController();
+      activeController = controller;
+      reset();
+      const text = message.value.trim();
+      if (!text) {
+        status.textContent = "Введите текст заявки.";
+        return;
+      }
+      status.textContent = "Обрабатываем заявку…";
+      try {
+        const response = await fetch("/api/triage", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+          signal: controller.signal,
+        });
+        const result = await response.json();
+        if (id !== requestId) return;
+        if (response.ok && result.status === "ready" &&
+            Object.hasOwn(topicNames, result.topic) &&
+            typeof result.draft === "string" && result.draft.trim()) {
+          topic.textContent = topicNames[result.topic];
+          draft.textContent = result.draft;
+          answer.hidden = false;
+          status.textContent = "Заявка разобрана.";
+        } else if (result.status === "invalid_input") {
+          status.textContent = "Введите непустой текст заявки.";
+        } else {
+          reset();
+          manual.hidden = false;
+          status.textContent = "Автоматический разбор недоступен.";
+        }
+      } catch (error) {
+        if (id !== requestId) return;
+        reset();
+        manual.hidden = false;
+        status.textContent = "Не удалось обработать заявку автоматически.";
+      }
     });
   </script>
 </body>
